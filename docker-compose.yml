@@ -1,0 +1,40 @@
+version: '3.7'
+
+services:
+  web:
+    build: .
+    container_name: fastapi_app
+    ports:
+      - "8010:80"
+    volumes:
+      - ./app:/code/app
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: "postgresql://user_bcra:bcra1234@db/bcra_deudores"
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 1.3g
+    #       cpus: "0.8"
+
+  db:
+    image: postgres
+    container_name: postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: user_bcra
+      POSTGRES_PASSWORD: bcra1234
+      POSTGRES_DB: bcra_deudores
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 1.3g
+    #       cpus: "0.8"
+
+volumes:
+  postgres_data:
