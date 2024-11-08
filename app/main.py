@@ -4,13 +4,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from fastapi.responses import HTMLResponse
 from app.database import get_db
 from app.models import Entidad, Deudor, Padron
-from sqlalchemy import func  # Import func from SQLAlchemy
+from sqlalchemy import and_, func
+from typing import List
 from contextlib import contextmanager
 import zipfile
-import py7zr
+import time
 import tempfile
 import logging
-from concurrent.futures import ThreadPoolExecutor
+# from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger('uvicorn.error')
 logger.setLevel(logging.DEBUG)
@@ -545,7 +546,10 @@ def save_batch_padron(db, batch):
 
 @app.get("/padron/{identificacion}")
 async def get_padron_by_identificacion(identificacion: str, db: Session = Depends(get_db)):
-	logger.info(f"Buscando detalle del padrón para identificación {identificacion}")
+	# Tomar el tiempo de inicio
+	start_time = time.time()
+
+	# logger.info(f"Buscando detalle del padrón para identificación {identificacion}")
 
 	# Determinar si la identificación es un DNI (8 dígitos) o un CUIT/CUIL (11 dígitos)
 	if len(identificacion) == 8 and identificacion.isdigit():
@@ -559,13 +563,18 @@ async def get_padron_by_identificacion(identificacion: str, db: Session = Depend
 	else:
 		posibles_identificaciones = [identificacion]
 
-	logger.info(f"Posibles identificaciones a buscar: {posibles_identificaciones}")
+	# logger.info(f"Posibles identificaciones a buscar: {posibles_identificaciones}")
 
 	# Buscar en la base de datos por las identificaciones generadas
 	registro = db.query(Padron).filter(Padron.identificacion.in_(posibles_identificaciones)).first()
 
 	if not registro:
 		raise HTTPException(status_code=404, detail="Registro no encontrado")
+
+	# Tomar el tiempo de fin y calcular la duración
+	end_time = time.time()
+	duration = end_time - start_time
+
 
 	return {
 		"id": registro.id,
@@ -574,5 +583,45 @@ async def get_padron_by_identificacion(identificacion: str, db: Session = Depend
 		"actividad": registro.actividad,
 		"marca_baja": registro.marca_baja,
 		"cuit_reemplazo": registro.cuit_reemplazo,
-		"fallecimiento": registro.fallecimiento
+		"fallecimiento": registro.fallecimiento,
+		"tiempo_demora_segundos": duration
+	}
+
+@app.get("/padron/nombre/{nombre_apellido}")
+async def get_padron_by_nombre(nombre_apellido: str, db: Session = Depends(get_db)):
+	# Tomar el tiempo de inicio
+	start_time = time.time()
+
+	# Dividir el nombre y apellido en palabras clave
+	palabras_clave = nombre_apellido.split()
+
+	# Crear una condición que verifique que cada palabra clave esté en la denominación
+	condiciones = [Padron.denominacion.ilike(f"%{palabra}%") for palabra in palabras_clave]
+
+	# Ejecutar la consulta usando AND para buscar todas las palabras en cualquier orden
+	registros = db.query(Padron).filter(and_(*condiciones)).all()
+
+	if not registros:
+		raise HTTPException(status_code=404, detail="No se encontraron registros")
+
+	# Tomar el tiempo de fin y calcular la duración
+	end_time = time.time()
+	duration = end_time - start_time
+
+	# Formatear la respuesta
+	respuesta = []
+	for registro in registros:
+		respuesta.append({
+			"id": registro.id,
+			"identificacion": registro.identificacion,
+			"denominacion": registro.denominacion,
+			"actividad": registro.actividad,
+			"marca_baja": registro.marca_baja,
+			"cuit_reemplazo": registro.cuit_reemplazo,
+			"fallecimiento": registro.fallecimiento
+		})
+
+	return {
+		"resultados": respuesta,
+		"tiempo_demora_segundos": duration
 	}

@@ -11,13 +11,10 @@ services:
     depends_on:
       - db
     environment:
-      DATABASE_URL: "postgresql://user_bcra:bcra1234@db/bcra_deudores"
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 1.3g
-    #       cpus: "0.8"
-
+      - DATABASE_URL="postgresql://user_bcra:bcra1234@db/bcra_deudores"
+      - VIRTUAL_HOST=bcra-api.libra-soft.com
+      - LETSENCRYPT_EMAIL=levislibra@libra-soft.com
+      - VIRTUAL_PORT=80
   db:
     image: postgres
     container_name: postgres_db
@@ -30,11 +27,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5433:5432"
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 1.3g
-    #       cpus: "0.8"
 
 volumes:
   postgres_data:
+
+networks:
+  default:
+    external:
+      name: librasoft_default
