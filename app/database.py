@@ -3,7 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 # Declarar la URL de la base de datos
-DATABASE_URL = "postgresql://user_bcra:bcra1234@db/bcra_deudores"
+DATABASE_URL = "postgresql://user_bcra:bcra1234@bcra_db/bcra_deudores"
 print(DATABASE_URL)  # Debugging
 # Crear el motor de conexión
 engine = create_engine(DATABASE_URL)

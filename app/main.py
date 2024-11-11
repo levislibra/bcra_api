@@ -75,6 +75,11 @@ async def get_deudor_info(numero_identificacion: str, db: Session = Depends(get_
 	return {
 		"numero_identificacion": numero_identificacion,
 		"fecha_informacion": max_fecha,
+		"monto_situacion_1": sum(deuda.prestamos_total_garantias for deuda in deudas if deuda.situacion == 1),
+		"monto_situacion_2": sum(deuda.prestamos_total_garantias for deuda in deudas if deuda.situacion == 2),
+		"monto_situacion_3": sum(deuda.prestamos_total_garantias for deuda in deudas if deuda.situacion == 3),
+		"monto_situacion_4": sum(deuda.prestamos_total_garantias for deuda in deudas if deuda.situacion == 4),
+		"monto_situacion_5": sum(deuda.prestamos_total_garantias for deuda in deudas if deuda.situacion == 5),
 		"deudas": [
 			{
 				"situacion": deuda.situacion,

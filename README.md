@@ -115,7 +115,62 @@ CREATE TABLE padrones (
 	•	Debtor Information Endpoint: Query debtor data.
 	•	Padron Processing Endpoint: Process and store padron data.
 
-8. Contact
+8. Add index to improve performance
+
+Here’s a recommended summary of indexes to optimize the database performance for the deudores and padrones tables. These indexes will improve the speed of search queries on key fields.
+
+Indexes for deudores Table
+
+	1.	Primary Identifiers
+	•	numero_identificacion: Index to quickly locate records by identification number (CUIT, DNI). This is the most critical index for queries where deudores are looked up by their identification.
+
+CREATE INDEX idx_deudores_numero_identificacion ON deudores (numero_identificacion);
+
+
+	2.	Textual Fields for Fuzzy Search
+	•	nombre_entidad: Index to enable faster searches by the entity name when looking up by the bank or other textual criteria.
+
+CREATE INDEX idx_deudores_nombre_entidad ON deudores (nombre_entidad);
+
+
+	3.	Composite Index for Filtering and Sorting
+	•	(fecha_informacion, numero_identificacion): Composite index to speed up queries that filter by numero_identificacion and order by the latest fecha_informacion.
+
+CREATE INDEX idx_deudores_fecha_informacion_identificacion ON deudores (fecha_informacion, numero_identificacion);
+
+
+
+Indexes for padrones Table
+
+	1.	Primary Identifiers
+	•	identificacion: Essential index for searching by unique identification (CUIT/CUIL). This index ensures that searches by identification will be quick and efficient.
+
+CREATE INDEX idx_padrones_identificacion ON padrones (identificacion);
+
+
+	2.	Textual Fields for Search by Name
+	•	denominacion: Index to speed up searches on the denominacion field when querying for names, especially useful for partial or fuzzy matching.
+
+CREATE INDEX idx_padrones_denominacion ON padrones (denominacion);
+
+Additionally, to improve performance for partial and fuzzy text searches on the denominacion field in the padrones table, you can leverage PostgreSQL’s trigram indexing.
+
+Additional Index for padrones Table
+
+	1.	Trigram Index for Faster Text Search
+	•	Trigram Extension: Install the trigram extension for PostgreSQL if it’s not already enabled. This extension enhances text search capabilities, especially for partial matches and similarity searches.
+
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+
+	•	Trigram Index on denominacion: Create a trigram-based GIN index on denominacion to optimize queries that search for names with partial matches or similar text patterns. This index is particularly useful if you are performing ILIKE or similarity searches.
+
+CREATE INDEX idx_padrones_denominacion_trgm ON padrones USING gin (denominacion gin_trgm_ops);
+
+
+By including this trigram index, queries on denominacion in the padrones table will be significantly faster for searches involving partial or approximate matching, making it ideal for large datasets where text search efficiency is crucial.
+
+9. Contact
 
 Librasoft SAS
 Email: levislibra@libra-soft.com

@@ -9,13 +9,13 @@ services:
     volumes:
       - ./app:/code/app
     depends_on:
-      - db
+      - bcra_db
     environment:
-      - DATABASE_URL="postgresql://user_bcra:bcra1234@db/bcra_deudores"
+      - DATABASE_URL="postgresql://user_bcra:bcra1234@bcra_db/bcra_deudores"
       - VIRTUAL_HOST=bcra-api.libra-soft.com
       - LETSENCRYPT_EMAIL=levislibra@libra-soft.com
       - VIRTUAL_PORT=80
-  db:
+  bcra_db:
     image: postgres
     container_name: postgres_db
     restart: always
