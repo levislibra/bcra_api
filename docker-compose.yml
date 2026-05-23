@@ -12,9 +12,20 @@ services:
       - bcra_db
     environment:
       - DATABASE_URL="postgresql://user_bcra:bcra1234@bcra_db/bcra_deudores"
-      - VIRTUAL_HOST=bcra-api.libra-soft.com
+      - VIRTUAL_HOST=bcra-api.cloudlibrasoft.com
       - LETSENCRYPT_EMAIL=levislibra@libra-soft.com
       - VIRTUAL_PORT=80
+    # ✅ CRÍTICO: Agregar límites de memoria
+    deploy:
+      resources:
+        limits:
+          memory: 5G        # Límite máximo de 5GB
+        reservations:
+          memory: 4G        # Memoria reservada de 4GB
+    # O usar la sintaxis más simple:
+    mem_limit: 5g
+    mem_reservation: 4g
+  
   bcra_db:
     image: postgres
     container_name: postgres_db
@@ -23,10 +34,31 @@ services:
       POSTGRES_USER: user_bcra
       POSTGRES_PASSWORD: bcra1234
       POSTGRES_DB: bcra_deudores
+    command: [
+      "postgres",
+      "-c", "shared_buffers=1GB",
+      "-c", "effective_cache_size=3GB", 
+      "-c", "maintenance_work_mem=512MB",
+      "-c", "checkpoint_completion_target=0.9",
+      "-c", "wal_buffers=16MB",
+      "-c", "default_statistics_target=100",
+      "-c", "random_page_cost=1.1",
+      "-c", "effective_io_concurrency=200",
+      "-c", "work_mem=64MB",
+      "-c", "min_wal_size=2GB",
+      "-c", "max_wal_size=8GB"
+    ]
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5433:5432"
+    # ✅ Memoria para PostgreSQL
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 2G
 
 volumes:
   postgres_data:

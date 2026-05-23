@@ -25,6 +25,18 @@ print("Tablas creadas", flush=True)
 
 # Define el token único que será usado para autenticar
 SECRET_TOKEN = "1234"
+PREFIJOS_CUIL = [
+    "01", "02", "03", "04", "05", "06", "07", "08", "09", "10",
+    "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
+    "21", "22", "23", "24", "25", "26", "27", "28", "29", "30",
+    "31", "32", "33", "34", "35", "36", "37", "38", "39", "40",
+    "41", "42", "43", "44", "45", "46", "47", "48", "49", "50",
+    "51", "52", "53", "54", "55", "56", "57", "58", "59", "60",
+    "61", "62", "63", "64", "65", "66", "67", "68", "69", "70",
+    "71", "72", "73", "74", "75", "76", "77", "78", "79", "80",
+    "81", "82", "83", "84", "85", "86", "87", "88", "89", "90",
+    "91", "92", "93", "94", "95", "96", "97", "98", "99"
+]
 
 @app.get("/")
 async def read_root():
@@ -38,18 +50,10 @@ async def read_root():
 async def get_deudor_info(numero_identificacion: str, db: Session = Depends(get_db)):
 	logger.info(f"Buscando deudor con identificación {numero_identificacion}")
 
-	# Determinar si la identificación es CUIT o DNI
-	if len(numero_identificacion) == 8:
-		# Generar posibles CUIT con prefijos comunes y el dígito verificador correcto
-		prefijos = ["20", "23", "24", "27"]
-		posibles_cuits = [
-			f"{prefijo}{numero_identificacion}{calcular_digito_verificador(f'{prefijo}{numero_identificacion}')}"
-			for prefijo in prefijos
-		]
-	else:
-		posibles_cuits = [numero_identificacion]
-	
-	logger.info(f"Posibles CUITs: {posibles_cuits}")
+	if len(numero_identificacion) != 11:
+		raise HTTPException(status_code=400, detail="Número de identificación inválido. Debe tener 11 dígitos (CUIL/CUIT).")
+
+	posibles_cuits = [numero_identificacion]
 
 	# Obtener la fecha más reciente de información para el deudor
 	max_fecha = db.query(func.max(Deudor.fecha_informacion)).filter(
@@ -73,7 +77,7 @@ async def get_deudor_info(numero_identificacion: str, db: Session = Depends(get_
 
 	# Formar la respuesta con todas las deudas del deudor en la fecha más reciente
 	return {
-		"numero_identificacion": numero_identificacion,
+		"numero_identificacion": deudas[0].numero_identificacion,
 		"fecha_informacion": max_fecha,
 		"monto_situacion_1": sum(deuda.prestamos_total_garantias for deuda in deudas if deuda.situacion == 1),
 		"monto_situacion_2": sum(deuda.prestamos_total_garantias for deuda in deudas if deuda.situacion == 2),
@@ -94,16 +98,10 @@ async def get_deudor_info(numero_identificacion: str, db: Session = Depends(get_
 async def get_peor_situacion(numero_identificacion: str, db: Session = Depends(get_db)):
 	logger.info(f"Buscando peor situación para identificación {numero_identificacion}")
 
-	# Determinar si la identificación es CUIT o DNI
-	if len(numero_identificacion) == 8:
-		# Generar posibles CUIT con prefijos comunes y el dígito verificador correcto
-		prefijos = ["20", "23", "24", "27"]
-		posibles_cuits = [
-			f"{prefijo}{numero_identificacion}{calcular_digito_verificador(f'{prefijo}{numero_identificacion}')}"
-			for prefijo in prefijos
-		]
-	else:
-		posibles_cuits = [numero_identificacion]
+	if len(numero_identificacion) != 11:
+		raise HTTPException(status_code=400, detail="Número de identificación inválido. Debe tener 11 dígitos (CUIL/CUIT).")
+
+	posibles_cuits = [numero_identificacion]
 
 	logger.info(f"Posibles CUITs: {posibles_cuits}")
 
@@ -214,7 +212,7 @@ async def get_upload_form():
 		<body>
 			<div class="form-container">
 				<h3>Subir archivos de deudores y entidades</h3>
-				<form action="/upload/" enctype="multipart/form-data" method="post">
+				<form action="/deudores/upload/" enctype="multipart/form-data" method="post">
 					<div class="form-group">
 						<label for="deudores">Archivo Deudores:</label>
 						<input type="file" id="deudores" name="deudores" required>
@@ -244,12 +242,15 @@ async def upload_files(
 	# Verificar el token
 	if token != SECRET_TOKEN:
 		raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
-
+	logger.info(f"Token correcto.")
+	logger.info(f"Procesando archivo entidades...")
 	# Procesar primero el archivo de entidades
 	process_entidades(entidades.file, db)
-	
+	logger.info(f"Archivo de entidades procesado correctamente.")
+	logger.info(f"Procesando archivo deudores...")
 	# Luego procesar el archivo de deudores
 	process_deudores(deudores.file, db)
+	logger.info(f"Archivo de deudores procesado correctamente.")
 
 	return {"message": "Archivos procesados correctamente"}
 
@@ -474,22 +475,24 @@ async def upload_padron(
 	token: str = Form(...),  # Leer el token desde el formulario
 	db: Session = Depends(get_db)
 ):
+	logger.info(f"Procesando archivo Padrón ***************")
 	# Verificar el token
 	if token != SECRET_TOKEN:
 		raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
-
+	logger.info(f"Token correcto.")
+	logger.info(f"Procesando archivo Padrón...")
 	# Procesar el archivo de padrón
 	process_padron(padron.file, db)
-
+	logger.info(f"Archivo Padrón procesado correctamente.")
 	return {"message": "Archivo Padrón procesado correctamente"}
 
 def process_padron(padron_file, db, batch_size=5000):
-	print("Processing padron file...", flush=True)
+	logger.info("Processing padron file...")
 
 	# Eliminar todos los registros de la tabla antes de cargar los nuevos datos
 	db.query(Padron).delete()
 	db.commit()
-	print("All existing records deleted from padrones table.", flush=True)
+	logger.info(f"All existing records deleted from padrones table.")
 
 	# Crear un archivo temporal para manejar el contenido del archivo subido
 	with tempfile.TemporaryFile() as temp_file:
@@ -555,40 +558,39 @@ async def get_padron_by_identificacion(identificacion: str, db: Session = Depend
 	start_time = time.time()
 
 	# logger.info(f"Buscando detalle del padrón para identificación {identificacion}")
-
+	posibles_identificaciones = [identificacion]
 	# Determinar si la identificación es un DNI (8 dígitos) o un CUIT/CUIL (11 dígitos)
 	if len(identificacion) == 8 and identificacion.isdigit():
 		# Generar posibles CUITs con prefijos comunes y calcular el dígito verificador
-		prefijos = ["20", "23", "24", "27"]
-		posibles_cuits = [
-			f"{prefijo}{identificacion}{calcular_digito_verificador(f'{prefijo}{identificacion}')}"
-			for prefijo in prefijos
-		]
-		posibles_identificaciones = [identificacion] + posibles_cuits
-	else:
-		posibles_identificaciones = [identificacion]
-
-	# logger.info(f"Posibles identificaciones a buscar: {posibles_identificaciones}")
+		for prefijo in PREFIJOS_CUIL:
+			posibles_identificaciones.append(str(prefijo) + str(identificacion) + str(calcular_digito_verificador(prefijo + identificacion)))
+	
+	logger.info(f"Posibles identificaciones a buscar: {posibles_identificaciones}")
 
 	# Buscar en la base de datos por las identificaciones generadas
-	registro = db.query(Padron).filter(Padron.identificacion.in_(posibles_identificaciones)).first()
-
-	if not registro:
+	registros = db.query(Padron).filter(Padron.identificacion.in_(posibles_identificaciones))
+	logger.info(f"Registro encontrado: {registros}")
+	if not registros:
 		raise HTTPException(status_code=404, detail="Registro no encontrado")
 
 	# Tomar el tiempo de fin y calcular la duración
 	end_time = time.time()
 	duration = end_time - start_time
 
-
+	# Formatear la respuesta
+	padrones = []
+	for registro in registros:
+		padrones.append({
+			"id": registro.id,
+			"identificacion": registro.identificacion,
+			"denominacion": registro.denominacion,
+			"actividad": registro.actividad,
+			"marca_baja": registro.marca_baja,
+			"cuit_reemplazo": registro.cuit_reemplazo,
+			"fallecimiento": registro.fallecimiento
+		})
 	return {
-		"id": registro.id,
-		"identificacion": registro.identificacion,
-		"denominacion": registro.denominacion,
-		"actividad": registro.actividad,
-		"marca_baja": registro.marca_baja,
-		"cuit_reemplazo": registro.cuit_reemplazo,
-		"fallecimiento": registro.fallecimiento,
+		"resultado": padrones,
 		"tiempo_demora_segundos": duration
 	}
 
@@ -627,6 +629,6 @@ async def get_padron_by_nombre(nombre_apellido: str, db: Session = Depends(get_d
 		})
 
 	return {
-		"resultados": respuesta,
+		"resultado": respuesta,
 		"tiempo_demora_segundos": duration
 	}
