@@ -107,7 +107,7 @@ Create padrones Table
 
 6. Environment Details
 
-	•	DATABASE_URL: Connection string set in docker-compose.yml.
+	•	DATABASE_URL y SECRET_TOKEN: Se cargan mediante Docker Compose secrets. Cree los archivos locales `secrets/database_url` y `secrets/secret_token`; el repositorio los ignora.
 
 7. API Endpoints
 

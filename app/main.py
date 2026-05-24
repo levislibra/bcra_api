@@ -1,11 +1,10 @@
-import os
-
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Header, Form
 from app.database import engine, Base
 from sqlalchemy.orm import Session, sessionmaker
 from fastapi.responses import HTMLResponse
 from app.database import get_db
 from app.models import Entidad, Deudor, Padron
+from app.settings import get_secret
 from sqlalchemy import and_, func
 from typing import List
 from contextlib import contextmanager
@@ -26,7 +25,7 @@ Base.metadata.create_all(bind=engine)
 print("Tablas creadas", flush=True)
 
 # Define el token único que será usado para autenticar
-SECRET_TOKEN = os.getenv("SECRET_TOKEN", "1234")
+SECRET_TOKEN = get_secret("SECRET_TOKEN")
 PREFIJOS_CUIL = [
     "01", "02", "03", "04", "05", "06", "07", "08", "09", "10",
     "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
