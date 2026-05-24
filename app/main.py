@@ -1,9 +1,10 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Header, Form
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Header, Form, status
 from app.database import engine, Base
 from sqlalchemy.orm import Session, sessionmaker
 from fastapi.responses import HTMLResponse
 from app.database import get_db
-from app.models import Entidad, Deudor, Padron
+from app.import_jobs import create_deudores_job, get_job_status_payload, mark_incomplete_jobs_as_failed
+from app.models import Entidad, Deudor, ImportJob, Padron
 from app.settings import get_secret
 from sqlalchemy import and_, func
 from typing import List
@@ -22,6 +23,7 @@ app = FastAPI()
 # Crear las tablas en la base de datos
 print("Creando tablas...", flush=True)  # Debugging
 Base.metadata.create_all(bind=engine)
+mark_incomplete_jobs_as_failed()
 print("Tablas creadas", flush=True)
 
 # Define el token único que será usado para autenticar
@@ -54,6 +56,18 @@ async def validate_token(token: str):
 	if token != SECRET_TOKEN:
 		raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
 	return {"valid": True}
+
+
+@app.get("/jobs/{job_id}")
+async def get_job_status(job_id: str, x_import_token: str = Header(..., alias="X-Import-Token"), db: Session = Depends(get_db)):
+	if x_import_token != SECRET_TOKEN:
+		raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
+
+	job = db.get(ImportJob, job_id)
+	if job is None:
+		raise HTTPException(status_code=404, detail="Job no encontrado")
+
+	return get_job_status_payload(job)
 
 # *********************************************
 # Consultas por API
@@ -175,19 +189,29 @@ async def get_upload_form():
                     display: flex;
                     justify-content: center;
                     align-items: center;
-                    height: 100vh;
+                    min-height: 100vh;
+                    margin: 0;
+                    padding: 24px;
                 }
                 .form-container {
                     background-color: #fff;
-                    padding: 20px;
+                    padding: 24px;
                     border-radius: 10px;
                     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-                    max-width: 400px;
+                    max-width: 460px;
                     width: 100%;
                 }
                 h3 {
                     text-align: center;
                     color: #333;
+                    margin-top: 0;
+                }
+                p.helper {
+                    margin-top: 0;
+                    margin-bottom: 18px;
+                    color: #555;
+                    font-size: 14px;
+                    line-height: 1.5;
                 }
                 label {
                     display: block;
@@ -198,7 +222,7 @@ async def get_upload_form():
                 input[type="text"] {
                     width: 100%;
                     padding: 10px;
-                    margin-bottom: 20px;
+                    margin-bottom: 18px;
                     border: 1px solid #ccc;
                     border-radius: 5px;
                     box-sizing: border-box;
@@ -220,9 +244,6 @@ async def get_upload_form():
                 button[type="submit"]:disabled {
                     background-color: #93c5a1;
                     cursor: not-allowed;
-                }
-                .form-group {
-                    margin-bottom: 20px;
                 }
                 .message {
                     display: none;
@@ -273,33 +294,38 @@ async def get_upload_form():
                     background: linear-gradient(90deg, #2563eb, #16a34a);
                     transition: width 0.2s ease;
                 }
+                .job-meta {
+                    margin-top: 8px;
+                    color: #666;
+                    font-size: 13px;
+                    min-height: 18px;
+                }
             </style>
         </head>
         <body>
             <div class="form-container">
                 <h3>Subir archivos de deudores y entidades</h3>
+                <p class="helper">La carga se ejecuta en background. Cuando termine la subida, el servidor crea un job y podés seguir el progreso sin dejar la request del navegador abierta.</p>
                 <form id="upload-form" action="/deudores/upload/" enctype="multipart/form-data" method="post">
-                    <div class="form-group">
-                        <label for="deudores">Archivo Deudores (.zip):</label>
-                        <input type="file" id="deudores" name="deudores" accept=".zip" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="entidades">Archivo Entidades:</label>
-                        <input type="file" id="entidades" name="entidades" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="token">Token de seguridad:</label>
-                        <input type="text" id="token" name="token" placeholder="Ingresa tu token" required>
-                    </div>
+                    <label for="deudores">Archivo Deudores (.zip):</label>
+                    <input type="file" id="deudores" name="deudores" accept=".zip" required>
+
+                    <label for="entidades">Archivo Entidades:</label>
+                    <input type="file" id="entidades" name="entidades" required>
+
+                    <label for="token">Token de seguridad:</label>
+                    <input type="text" id="token" name="token" placeholder="Ingresá tu token" required>
+
                     <div id="message" class="message" role="alert" aria-live="polite"></div>
                     <div id="progress-wrapper" class="progress-wrapper" aria-live="polite">
                         <div class="progress-header">
-                            <span>Progreso de carga</span>
+                            <span id="progress-label">Progreso</span>
                             <span id="progress-text">0%</span>
                         </div>
                         <div class="progress-track">
                             <div id="progress-bar" class="progress-bar"></div>
                         </div>
+                        <div id="job-meta" class="job-meta"></div>
                     </div>
                     <button id="submit-button" type="submit">Cargar archivos</button>
                 </form>
@@ -310,7 +336,9 @@ async def get_upload_form():
                 const progressWrapper = document.getElementById("progress-wrapper");
                 const progressBar = document.getElementById("progress-bar");
                 const progressText = document.getElementById("progress-text");
+                const progressLabel = document.getElementById("progress-label");
                 const message = document.getElementById("message");
+                const jobMeta = document.getElementById("job-meta");
                 const deudoresInput = document.getElementById("deudores");
                 const entidadesInput = document.getElementById("entidades");
 
@@ -325,8 +353,13 @@ async def get_upload_form():
                 }
 
                 function setProgress(value) {
-                    progressBar.style.width = value + "%";
-                    progressText.textContent = value + "%";
+                    const safeValue = Math.max(0, Math.min(100, value));
+                    progressBar.style.width = safeValue + "%";
+                    progressText.textContent = safeValue + "%";
+                }
+
+                function setJobMeta(text) {
+                    jobMeta.textContent = text || "";
                 }
 
                 function toggleUploadingState(isUploading) {
@@ -354,10 +387,60 @@ async def get_upload_form():
                     }
                 }
 
+                async function pollJob(jobId, token) {
+                    try {
+                        const response = await fetch("/jobs/" + encodeURIComponent(jobId), {
+                            method: "GET",
+                            cache: "no-store",
+                            headers: {
+                                "X-Import-Token": token
+                            }
+                        });
+
+                        if (!response.ok) {
+                            let detail = "No se pudo consultar el estado del job.";
+                            try {
+                                const data = await response.json();
+                                detail = data.detail || detail;
+                            } catch (error) {
+                                console.error(error);
+                            }
+                            throw new Error(detail);
+                        }
+
+                        const data = await response.json();
+                        progressLabel.textContent = "Procesamiento";
+                        setProgress(data.progress_percent || 0);
+                        setJobMeta("Job: " + data.job_id + " | Etapa: " + data.stage + " | Filas: " + (data.processed_rows || 0).toLocaleString("es-AR"));
+
+                        if (data.status === "completed") {
+                            setProgress(100);
+                            setMessage(data.message || "Archivos procesados correctamente.", "success");
+                            toggleUploadingState(false);
+                            form.reset();
+                            return;
+                        }
+
+                        if (data.status === "failed") {
+                            setMessage(data.error || data.message || "El job falló durante el procesamiento.", "error");
+                            toggleUploadingState(false);
+                            return;
+                        }
+
+                        setMessage(data.message || "Procesando archivos en segundo plano...", "info");
+                        window.setTimeout(() => pollJob(jobId, token), 2000);
+                    } catch (error) {
+                        setMessage((error && error.message) || "Error consultando el estado del job. Reintentando...", "info");
+                        window.setTimeout(() => pollJob(jobId, token), 3000);
+                    }
+                }
+
                 form.addEventListener("submit", async (event) => {
                     event.preventDefault();
                     clearMessage();
+                    setJobMeta("");
                     setProgress(0);
+                    progressLabel.textContent = "Subida";
                     progressWrapper.classList.remove("visible");
 
                     const formData = new FormData(form);
@@ -406,19 +489,34 @@ async def get_upload_form():
                         setProgress(percentage);
 
                         if (percentage === 100) {
-                            setMessage("Carga completa. Procesando archivos...", "info");
+                            setMessage("Subida completa. Creando job en el servidor...", "info");
                         }
                     });
 
                     xhr.addEventListener("load", () => {
-                        toggleUploadingState(false);
-
                         if (xhr.status >= 200 && xhr.status < 300) {
-                            setProgress(100);
-                            setMessage("Archivos procesados correctamente.", "success");
-                            form.reset();
+                            let data = null;
+                            try {
+                                data = JSON.parse(xhr.responseText);
+                            } catch (error) {
+                                console.error(error);
+                            }
+
+                            if (!data || !data.job_id) {
+                                toggleUploadingState(false);
+                                setMessage("La respuesta del servidor no incluyó el job de importación.", "error");
+                                return;
+                            }
+
+                            setProgress(0);
+                            progressLabel.textContent = "Procesamiento";
+                            setMessage(data.message || "Archivos subidos. Procesando en background...", "info");
+                            setJobMeta("Job: " + data.job_id + " | Etapa: " + data.stage);
+                            pollJob(data.job_id, token);
                             return;
                         }
+
+                        toggleUploadingState(false);
 
                         let detail = "Ocurrió un error al cargar los archivos.";
                         try {
@@ -442,168 +540,18 @@ async def get_upload_form():
     </html>
     '''
 
-@app.post("/deudores/upload/")
+
+@app.post("/deudores/upload/", status_code=status.HTTP_202_ACCEPTED)
 async def upload_files(
     deudores: UploadFile = File(...),
     entidades: UploadFile = File(...),
     token: str = Form(...),
-    db: Session = Depends(get_db)
 ):
     if token != SECRET_TOKEN:
         raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
 
-    validate_deudores_zip_file(deudores.file)
-
-    logger.info("Token correcto.")
-    logger.info("Procesando archivo entidades...")
-    process_entidades(entidades.file, db)
-    logger.info("Archivo de entidades procesado correctamente.")
-    logger.info("Procesando archivo de deudores...")
-    process_deudores(deudores.file, db)
-    logger.info("Archivo de deudores procesado correctamente.")
-
-    return {"message": "Archivos procesados correctamente"}
-
-
-def validate_deudores_zip_file(deudores_file):
-    original_position = deudores_file.tell()
-
-    try:
-        deudores_file.seek(0)
-        with zipfile.ZipFile(deudores_file) as zip_file:
-            if "deudores.txt" not in zip_file.namelist():
-                raise HTTPException(status_code=400, detail="El archivo ZIP de deudores debe contener deudores.txt")
-    except zipfile.BadZipFile as exc:
-        raise HTTPException(status_code=400, detail="El archivo de deudores no es un ZIP válido.") from exc
-    finally:
-        deudores_file.seek(original_position)
-
-
-def load_entidades(db):
-	# Cargar todas las entidades en un diccionario para reducir consultas repetidas
-	entidades = db.query(Entidad).all()
-	return {entidad.codigo_entidad: entidad.nombre_entidad for entidad in entidades}
-
-def process_deudores(deudores_file, db, batch_size=500):
-    print("Processing deudores file...", flush=True)
-
-    entidades_dict = load_entidades(db)
-
-    try:
-        deudores_file.seek(0)
-        with zipfile.ZipFile(deudores_file) as z:
-            with z.open("deudores.txt") as deudores_txt:
-                batch = []
-                line_count = 0
-
-                for line in deudores_txt:
-                    line = line.decode("ISO-8859-1")
-
-                    codigo_entidad = line[0:5].strip()
-                    fecha_informacion = line[5:11].strip()
-                    tipo_identificacion = line[11:13].strip()
-                    numero_identificacion = line[13:24].strip()
-                    actividad = line[24:27].strip()
-                    situacion = int(line[27:29].strip() or "0")
-                    prestamos_total_garantias = float(line[29:41].strip().replace(',', '.')) if line[29:41].strip() else None
-                    sin_uso = float(line[41:53].strip().replace(',', '.')) if line[41:53].strip() else None
-                    garantias_otorgadas = float(line[53:65].strip().replace(',', '.')) if line[53:65].strip() else None
-                    otros_conceptos = float(line[65:77].strip().replace(',', '.')) if line[65:77].strip() else None
-                    garantias_preferidas_a = float(line[77:89].strip().replace(',', '.')) if line[77:89].strip() else None
-                    garantias_preferidas_b = float(line[89:101].strip().replace(',', '.')) if line[89:101].strip() else None
-                    sin_garantias_preferidas = float(line[101:113].strip().replace(',', '.')) if line[101:113].strip() else None
-                    contragarantias_preferidas_a = float(line[113:125].strip().replace(',', '.')) if line[113:125].strip() else None
-                    contragarantias_preferidas_b = float(line[125:137].strip().replace(',', '.')) if line[125:137].strip() else None
-                    sin_contragarantias_preferidas = float(line[137:149].strip().replace(',', '.')) if line[137:149].strip() else None
-                    previsiones = float(line[149:161].strip().replace(',', '.')) if line[149:161].strip() else None
-                    deuda_cubierta = int(line[161:162].strip())
-                    proceso_judicial_revision = int(line[162:163].strip())
-                    refinanciaciones = int(line[163:164].strip())
-                    recategorizacion_obligatoria = int(line[164:165].strip())
-                    situacion_juridica = int(line[165:166].strip())
-                    irrecuperables_disposicion_tecnica = int(line[166:167].strip())
-                    dias_atraso = int(line[167:170].strip())
-
-                    nombre_entidad = entidades_dict.get(codigo_entidad, "Desconocida")
-
-                    batch.append({
-                        "codigo_entidad": codigo_entidad,
-                        "fecha_informacion": fecha_informacion,
-                        "tipo_identificacion": tipo_identificacion,
-                        "numero_identificacion": numero_identificacion,
-                        "actividad": actividad,
-                        "situacion": situacion,
-                        "prestamos_total_garantias": prestamos_total_garantias,
-                        "sin_uso": sin_uso,
-                        "garantias_otorgadas": garantias_otorgadas,
-                        "otros_conceptos": otros_conceptos,
-                        "garantias_preferidas_a": garantias_preferidas_a,
-                        "garantias_preferidas_b": garantias_preferidas_b,
-                        "sin_garantias_preferidas": sin_garantias_preferidas,
-                        "contragarantias_preferidas_a": contragarantias_preferidas_a,
-                        "contragarantias_preferidas_b": contragarantias_preferidas_b,
-                        "sin_contragarantias_preferidas": sin_contragarantias_preferidas,
-                        "previsiones": previsiones,
-                        "deuda_cubierta": deuda_cubierta,
-                        "proceso_judicial_revision": proceso_judicial_revision,
-                        "refinanciaciones": refinanciaciones,
-                        "recategorizacion_obligatoria": recategorizacion_obligatoria,
-                        "situacion_juridica": situacion_juridica,
-                        "irrecuperables_disposicion_tecnica": irrecuperables_disposicion_tecnica,
-                        "dias_atraso": dias_atraso,
-                        "nombre_entidad": nombre_entidad
-                    })
-
-                    line_count += 1
-
-                    if len(batch) >= batch_size:
-                        save_batch_deudor(db, batch)
-                        logger.info(f"Processed {line_count} lines so far")
-                        batch.clear()
-
-                if batch:
-                    save_batch_deudor(db, batch)
-                    logger.info(f"Processed {line_count} lines in total")
-                    batch.clear()
-    except zipfile.BadZipFile as exc:
-        raise HTTPException(status_code=400, detail="El archivo de deudores no es un ZIP válido.") from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=400, detail="El archivo ZIP de deudores debe contener deudores.txt") from exc
-
-
-def save_batch_deudor(db, batch):
-    db.bulk_insert_mappings(Deudor, batch)
-    db.commit()
-
-# *********************************************
-# Entidades
-# *********************************************
-
-def process_entidades(entidades_file, db):
-	# Leer el archivo completo y convertirlo a un formato de texto con ISO-8859-1 (o UTF-8 si funciona)
-	content = entidades_file.read().decode("ISO-8859-1")  # o UTF-8 si no hay problemas
-
-	# Procesar línea por línea
-	for line in content.splitlines():
-		# Los primeros 5 caracteres son el código de la entidad, el resto es el nombre
-		codigo_entidad = line[0:5].strip()  # Ahora tratado como String
-		nombre_entidad = line[5:].strip()
-
-		# Verificar si la entidad ya existe en la base de datos
-		entidad_existente = db.query(Entidad).filter(Entidad.codigo_entidad == codigo_entidad).first()
-
-		if entidad_existente:
-			# Si la entidad existe, actualiza su nombre
-			entidad_existente.nombre_entidad = nombre_entidad
-		else:
-			# Si no existe, crea una nueva entidad
-			nueva_entidad = Entidad(
-				codigo_entidad=codigo_entidad,
-				nombre_entidad=nombre_entidad
-			)
-			db.add(nueva_entidad)
-	
-	db.commit()
+    job = create_deudores_job(deudores=deudores, entidades=entidades)
+    return get_job_status_payload(job)
 
 
 # *********************************************

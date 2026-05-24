@@ -4,6 +4,9 @@ services:
     restart: unless-stopped
     expose:
       - "80"
+    depends_on:
+      bcra_db:
+        condition: service_healthy
     environment:
       DATABASE_URL_FILE: /run/secrets/database_url
       SECRET_TOKEN_FILE: /run/secrets/secret_token
@@ -20,11 +23,37 @@ services:
       - backend
       - proxy
 
+  bcra_db:
+    image: postgres:18.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: user_bcra
+      POSTGRES_DB: bcra_deudores
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      PGDATA: /var/lib/postgresql/18/docker
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_bcra -d bcra_deudores"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend
+
 secrets:
   database_url:
     file: ./secrets/database_url
   secret_token:
     file: ./secrets/secret_token
+  postgres_password:
+    file: ./secrets/postgres_password
+
+volumes:
+  postgres_data:
 
 networks:
   backend:
