@@ -1,17 +1,13 @@
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Header, Form, status
 from app.database import engine, Base
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 from fastapi.responses import HTMLResponse
 from app.database import get_db
-from app.import_jobs import create_deudores_job, get_job_status_payload, mark_incomplete_jobs_as_failed
-from app.models import Entidad, Deudor, ImportJob, Padron
+from app.import_jobs import create_deudores_job, create_padron_job, get_job_status_payload, mark_incomplete_jobs_as_failed
+from app.models import Deudor, ImportJob, Padron
 from app.settings import get_secret
 from sqlalchemy import and_, func
-from typing import List
-from contextlib import contextmanager
-import zipfile
 import time
-import tempfile
 import logging
 # from concurrent.futures import ThreadPoolExecutor
 
@@ -571,19 +567,29 @@ async def get_padron_upload_form():
 					display: flex;
 					justify-content: center;
 					align-items: center;
-					height: 100vh;
+					min-height: 100vh;
+					margin: 0;
+					padding: 24px;
 				}
 				.form-container {
 					background-color: #fff;
-					padding: 20px;
+					padding: 24px;
 					border-radius: 10px;
 					box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-					max-width: 400px;
+					max-width: 460px;
 					width: 100%;
 				}
 				h3 {
 					text-align: center;
 					color: #333;
+					margin-top: 0;
+				}
+				p.helper {
+					margin-top: 0;
+					margin-bottom: 18px;
+					color: #555;
+					font-size: 14px;
+					line-height: 1.5;
 				}
 				label {
 					display: block;
@@ -594,13 +600,13 @@ async def get_padron_upload_form():
 				input[type="text"] {
 					width: 100%;
 					padding: 10px;
-					margin-bottom: 20px;
+					margin-bottom: 18px;
 					border: 1px solid #ccc;
 					border-radius: 5px;
 					box-sizing: border-box;
 					font-size: 16px;
 				}
-				input[type="submit"] {
+				button[type="submit"] {
 					width: 100%;
 					background-color: #28a745;
 					color: white;
@@ -610,111 +616,314 @@ async def get_padron_upload_form():
 					font-size: 16px;
 					cursor: pointer;
 				}
-				input[type="submit"]:hover {
+				button[type="submit"]:hover {
 					background-color: #218838;
 				}
-				.form-group {
-					margin-bottom: 20px;
+				button[type="submit"]:disabled {
+					background-color: #93c5a1;
+					cursor: not-allowed;
+				}
+				.message {
+					display: none;
+					padding: 10px;
+					margin: 0 0 12px 0;
+					border-radius: 5px;
+					font-size: 14px;
+				}
+				.message.error {
+					display: block;
+					background-color: #fde8e8;
+					color: #b91c1c;
+				}
+				.message.info {
+					display: block;
+					background-color: #e8f1fd;
+					color: #1d4ed8;
+				}
+				.message.success {
+					display: block;
+					background-color: #e9f9ee;
+					color: #166534;
+				}
+				.progress-wrapper {
+					display: none;
+					margin-bottom: 12px;
+				}
+				.progress-wrapper.visible {
+					display: block;
+				}
+				.progress-header {
+					display: flex;
+					justify-content: space-between;
+					margin-bottom: 8px;
+					font-size: 14px;
+					color: #555;
+				}
+				.progress-track {
+					width: 100%;
+					height: 14px;
+					background-color: #e5e7eb;
+					border-radius: 999px;
+					overflow: hidden;
+				}
+				.progress-bar {
+					width: 0%;
+					height: 100%;
+					background: linear-gradient(90deg, #2563eb, #16a34a);
+					transition: width 0.2s ease;
+				}
+				.job-meta {
+					margin-top: 8px;
+					color: #666;
+					font-size: 13px;
+					min-height: 18px;
 				}
 			</style>
 		</head>
 		<body>
 			<div class="form-container">
 				<h3>Subir archivo de Padrón</h3>
-				<form action="/padron/upload/" enctype="multipart/form-data" method="post">
-					<div class="form-group">
-						<label for="padron">Archivo Padrón (.zip):</label>
-						<input type="file" id="padron" name="padron" required>
+				<p class="helper">La carga se ejecuta en background. El padrón anterior se reemplaza solo cuando el archivo nuevo termina de procesarse correctamente.</p>
+				<form id="upload-form" action="/padron/upload/" enctype="multipart/form-data" method="post">
+					<label for="padron">Archivo Padrón (.zip):</label>
+					<input type="file" id="padron" name="padron" accept=".zip" required>
+
+					<label for="token">Token de seguridad:</label>
+					<input type="text" id="token" name="token" placeholder="Ingresá tu token" required>
+
+					<div id="message" class="message" role="alert" aria-live="polite"></div>
+					<div id="progress-wrapper" class="progress-wrapper" aria-live="polite">
+						<div class="progress-header">
+							<span id="progress-label">Progreso</span>
+							<span id="progress-text">0%</span>
+						</div>
+						<div class="progress-track">
+							<div id="progress-bar" class="progress-bar"></div>
+						</div>
+						<div id="job-meta" class="job-meta"></div>
 					</div>
-					<div class="form-group">
-						<label for="token">Token de seguridad:</label>
-						<input type="text" id="token" name="token" placeholder="Ingresa tu token" required>
-					</div>
-					<input type="submit" value="Cargar archivo">
+					<button id="submit-button" type="submit">Cargar archivo</button>
 				</form>
 			</div>
+			<script>
+				const form = document.getElementById("upload-form");
+				const submitButton = document.getElementById("submit-button");
+				const progressWrapper = document.getElementById("progress-wrapper");
+				const progressBar = document.getElementById("progress-bar");
+				const progressText = document.getElementById("progress-text");
+				const progressLabel = document.getElementById("progress-label");
+				const message = document.getElementById("message");
+				const jobMeta = document.getElementById("job-meta");
+				const padronInput = document.getElementById("padron");
+
+				function setMessage(text, type) {
+					message.textContent = text;
+					message.className = "message " + type;
+				}
+
+				function clearMessage() {
+					message.textContent = "";
+					message.className = "message";
+				}
+
+				function setProgress(value) {
+					const safeValue = Math.max(0, Math.min(100, value));
+					progressBar.style.width = safeValue + "%";
+					progressText.textContent = safeValue + "%";
+				}
+
+				function setJobMeta(text) {
+					jobMeta.textContent = text || "";
+				}
+
+				function toggleUploadingState(isUploading) {
+					submitButton.disabled = isUploading;
+					form.querySelectorAll("input").forEach((input) => {
+						input.disabled = isUploading;
+					});
+				}
+
+				async function validateToken(token) {
+					const response = await fetch("/api/validate-token?token=" + encodeURIComponent(token), {
+						method: "GET",
+						cache: "no-store"
+					});
+
+					if (!response.ok) {
+						let detail = "No se pudo validar el token.";
+						try {
+							const data = await response.json();
+							detail = data.detail || detail;
+						} catch (error) {
+							console.error(error);
+						}
+						throw new Error(detail);
+					}
+				}
+
+				async function pollJob(jobId, token) {
+					try {
+						const response = await fetch("/jobs/" + encodeURIComponent(jobId), {
+							method: "GET",
+							cache: "no-store",
+							headers: {
+								"X-Import-Token": token
+							}
+						});
+
+						if (!response.ok) {
+							let detail = "No se pudo consultar el estado del job.";
+							try {
+								const data = await response.json();
+								detail = data.detail || detail;
+							} catch (error) {
+								console.error(error);
+							}
+							throw new Error(detail);
+						}
+
+						const data = await response.json();
+						progressLabel.textContent = "Procesamiento";
+						setProgress(data.progress_percent || 0);
+						setJobMeta("Job: " + data.job_id + " | Etapa: " + data.stage + " | Filas: " + (data.processed_rows || 0).toLocaleString("es-AR"));
+
+						if (data.status === "completed") {
+							setProgress(100);
+							setMessage(data.message || "Archivo procesado correctamente.", "success");
+							toggleUploadingState(false);
+							form.reset();
+							return;
+						}
+
+						if (data.status === "failed") {
+							setMessage(data.error || data.message || "El job falló durante el procesamiento.", "error");
+							toggleUploadingState(false);
+							return;
+						}
+
+						setMessage(data.message || "Procesando archivo en segundo plano...", "info");
+						window.setTimeout(() => pollJob(jobId, token), 2000);
+					} catch (error) {
+						setMessage((error && error.message) || "Error consultando el estado del job. Reintentando...", "info");
+						window.setTimeout(() => pollJob(jobId, token), 3000);
+					}
+				}
+
+				form.addEventListener("submit", async (event) => {
+					event.preventDefault();
+					clearMessage();
+					setJobMeta("");
+					setProgress(0);
+					progressLabel.textContent = "Subida";
+					progressWrapper.classList.remove("visible");
+
+					const formData = new FormData(form);
+					const token = formData.get("token");
+					const padronFile = padronInput.files[0];
+
+					if (!padronFile) {
+						setMessage("Seleccioná un archivo antes de continuar.", "error");
+						return;
+					}
+
+					if (!token) {
+						setMessage("Ingresá el token de seguridad.", "error");
+						return;
+					}
+
+					if (!padronFile.name.toLowerCase().endsWith(".zip")) {
+						setMessage("El archivo de padrón debe ser un .zip válido.", "error");
+						return;
+					}
+
+					toggleUploadingState(true);
+					setMessage("Validando token...", "info");
+
+					try {
+						await validateToken(token);
+					} catch (error) {
+						toggleUploadingState(false);
+						setMessage(error.message || "Token inválido.", "error");
+						return;
+					}
+
+					progressWrapper.classList.add("visible");
+					setMessage("Subiendo archivo...", "info");
+
+					const xhr = new XMLHttpRequest();
+					xhr.open("POST", form.action);
+
+					xhr.upload.addEventListener("progress", (progressEvent) => {
+						if (!progressEvent.lengthComputable) {
+							return;
+						}
+
+						const percentage = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+						setProgress(percentage);
+
+						if (percentage === 100) {
+							setMessage("Subida completa. Creando job en el servidor...", "info");
+						}
+					});
+
+					xhr.addEventListener("load", () => {
+						if (xhr.status >= 200 && xhr.status < 300) {
+							let data = null;
+							try {
+								data = JSON.parse(xhr.responseText);
+							} catch (error) {
+								console.error(error);
+							}
+
+							if (!data || !data.job_id) {
+								toggleUploadingState(false);
+								setMessage("La respuesta del servidor no incluyó el job de importación.", "error");
+								return;
+							}
+
+							setProgress(0);
+							progressLabel.textContent = "Procesamiento";
+							setMessage(data.message || "Archivo subido. Procesando en background...", "info");
+							setJobMeta("Job: " + data.job_id + " | Etapa: " + data.stage);
+							pollJob(data.job_id, token);
+							return;
+						}
+
+						toggleUploadingState(false);
+
+						let detail = "Ocurrió un error al cargar el archivo.";
+						try {
+							const data = JSON.parse(xhr.responseText);
+							detail = data.detail || data.message || detail;
+						} catch (error) {
+							console.error(error);
+						}
+						setMessage(detail, "error");
+					});
+
+					xhr.addEventListener("error", () => {
+						toggleUploadingState(false);
+						setMessage("Error de red durante la carga. Revisá la conexión e intentá nuevamente.", "error");
+					});
+
+					xhr.send(formData);
+				});
+			</script>
 		</body>
 	</html>
 	"""
 
-@app.post("/padron/upload")
+
+@app.post("/padron/upload/", status_code=status.HTTP_202_ACCEPTED)
 async def upload_padron(
-	padron: UploadFile = File(...), 
-	token: str = Form(...),  # Leer el token desde el formulario
-	db: Session = Depends(get_db)
+	padron: UploadFile = File(...),
+	token: str = Form(...),
 ):
-	logger.info(f"Procesando archivo Padrón ***************")
-	# Verificar el token
 	if token != SECRET_TOKEN:
 		raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
-	logger.info(f"Token correcto.")
-	logger.info(f"Procesando archivo Padrón...")
-	# Procesar el archivo de padrón
-	process_padron(padron.file, db)
-	logger.info(f"Archivo Padrón procesado correctamente.")
-	return {"message": "Archivo Padrón procesado correctamente"}
 
-def process_padron(padron_file, db, batch_size=5000):
-	logger.info("Processing padron file...")
-
-	# Eliminar todos los registros de la tabla antes de cargar los nuevos datos
-	db.query(Padron).delete()
-	db.commit()
-	logger.info(f"All existing records deleted from padrones table.")
-
-	# Crear un archivo temporal para manejar el contenido del archivo subido
-	with tempfile.TemporaryFile() as temp_file:
-		temp_file.write(padron_file.read())
-		temp_file.seek(0)
-
-		# Descomprimir el archivo .zip y procesar padron.txt
-		with zipfile.ZipFile(temp_file) as z:
-			with z.open('padron.txt') as padron_txt:
-				batch = []
-				line_count = 0
-
-				# Leer el archivo línea por línea
-				for line in padron_txt:
-					# Cambiar la codificación a ISO-8859-1
-					line = line.decode("ISO-8859-1").strip()
-
-					# Extraer los campos necesarios de la línea
-					identificacion = line[0:11].strip()
-					denominacion = line[11:171].strip()
-					actividad = line[171:177].strip()
-					marca_baja = line[177:178].strip()
-					cuit_reemplazo = line[178:189].strip()
-					fallecimiento = line[189:190].strip()
-
-					# Agregar al lote
-					batch.append({
-						"identificacion": identificacion,
-						"denominacion": denominacion,
-						"actividad": actividad,
-						"marca_baja": marca_baja,
-						"cuit_reemplazo": cuit_reemplazo,
-						"fallecimiento": fallecimiento
-					})
-
-					line_count += 1
-
-					# Procesar el lote cuando alcanza el tamaño definido
-					if len(batch) >= batch_size:
-						save_batch_padron(db, batch)
-						logger.info(f"Processed {line_count} lines so far")
-						batch.clear()  # Limpiar el lote para el siguiente
-
-				# Procesar cualquier lote restante
-				if batch:
-					save_batch_padron(db, batch)
-					logger.info(f"Processed {line_count} lines in total")
-					batch.clear()
-
-	print(f"Total de líneas procesadas: {line_count}")
-
-def save_batch_padron(db, batch):
-	db.bulk_insert_mappings(Padron, batch)
-	db.commit()
+	job = create_padron_job(padron=padron)
+	return get_job_status_payload(job)
 
 # *********************************************
 # Consultas por API

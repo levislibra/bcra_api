@@ -47,6 +47,9 @@ class Entidad(Base):
 
 class Padron(Base):
     __tablename__ = 'padrones'
+    __table_args__ = (
+        Index('idx_padrones_identificacion', 'identificacion'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     identificacion = Column(String(11), nullable=False)
@@ -71,6 +74,7 @@ class ImportJob(Base):
     processed_rows = Column(BigInteger, nullable=False, default=0)
     deudores_filename = Column(String(255), nullable=True)
     entidades_filename = Column(String(255), nullable=True)
+    padron_filename = Column(String(255), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False)
     started_at = Column(DateTime(timezone=True), nullable=True)
     finished_at = Column(DateTime(timezone=True), nullable=True)

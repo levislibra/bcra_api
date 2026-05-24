@@ -14,7 +14,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine
-from app.models import Deudor, Entidad, ImportJob
+from app.models import Deudor, Entidad, ImportJob, Padron
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -23,8 +23,11 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 UPLOAD_CHUNK_SIZE = 4 * 1024 * 1024
 DEUDORES_COPY_BATCH_SIZE = 50_000
+PADRON_COPY_BATCH_SIZE = 100_000
 DEUDORES_ZIP_MEMBER = "deudores.txt"
+PADRON_ZIP_MEMBER = "padron.txt"
 JOB_TYPE_DEUDORES = "deudores"
+JOB_TYPE_PADRON = "padron"
 ACTIVE_JOB_STATUSES = {"queued", "running"}
 
 DEUDOR_COPY_COLUMNS = (
@@ -53,6 +56,15 @@ DEUDOR_COPY_COLUMNS = (
     "irrecuperables_disposicion_tecnica",
     "dias_atraso",
     "nombre_entidad",
+)
+
+PADRON_COPY_COLUMNS = (
+    "identificacion",
+    "denominacion",
+    "actividad",
+    "marca_baja",
+    "cuit_reemplazo",
+    "fallecimiento",
 )
 
 _job_creation_lock = threading.Lock()
@@ -119,6 +131,18 @@ def _format_deudor_line(line: str, entidades_lookup: dict[str, str]) -> str:
     return "\t".join(fields) + "\n"
 
 
+def _format_padron_line(line: str) -> str:
+    fields = (
+        _sanitize_copy_text(line[0:11].strip()),
+        _sanitize_copy_text(line[11:171].strip()),
+        _sanitize_copy_text(line[171:177].strip()),
+        _sanitize_copy_text(line[177:178].strip()),
+        _sanitize_copy_text(line[178:189].strip()),
+        _sanitize_copy_text(line[189:190].strip()),
+    )
+    return "\t".join(fields) + "\n"
+
+
 def get_job_status_payload(job: ImportJob) -> dict[str, Any]:
     progress_percent = 0
     if job.progress_total:
@@ -146,7 +170,7 @@ def mark_incomplete_jobs_as_failed() -> None:
     try:
         interrupted_jobs = (
             db.query(ImportJob)
-            .filter(ImportJob.job_type == JOB_TYPE_DEUDORES)
+            .filter(ImportJob.job_type.in_((JOB_TYPE_DEUDORES, JOB_TYPE_PADRON)))
             .filter(ImportJob.status.in_(tuple(ACTIVE_JOB_STATUSES)))
             .all()
         )
@@ -190,10 +214,25 @@ def _validate_deudores_zip(zip_path: Path) -> None:
         ) from exc
 
 
-def _ensure_no_active_job(db: Session) -> None:
+def _validate_zip_member(zip_path: Path, member_name: str, detail_name: str) -> None:
+    try:
+        with zipfile.ZipFile(zip_path) as zip_file:
+            if member_name not in zip_file.namelist():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"El archivo ZIP de {detail_name} debe contener {member_name}",
+                )
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El archivo de {detail_name} no es un ZIP válido.",
+        ) from exc
+
+
+def _ensure_no_active_job(db: Session, job_type: str) -> None:
     active_job = (
         db.query(ImportJob)
-        .filter(ImportJob.job_type == JOB_TYPE_DEUDORES)
+        .filter(ImportJob.job_type == job_type)
         .filter(ImportJob.status.in_(tuple(ACTIVE_JOB_STATUSES)))
         .order_by(ImportJob.created_at.desc())
         .first()
@@ -201,7 +240,7 @@ def _ensure_no_active_job(db: Session) -> None:
     if active_job is not None:
         raise HTTPException(
             status_code=409,
-            detail=f"Ya hay un job de deudores activo ({active_job.id}). Esperá a que termine antes de iniciar otro.",
+            detail=f"Ya hay un job activo ({active_job.id}). Esperá a que termine antes de iniciar otro.",
         )
 
 
@@ -344,6 +383,110 @@ def _copy_deudores_to_postgres(
         connection.close()
 
 
+def _copy_padron_to_postgres(padron_zip_path: Path, job_id: str) -> tuple[int, int]:
+    connection = engine.raw_connection()
+    cursor = connection.cursor()
+    total_rows = 0
+    processed_bytes = 0
+
+    try:
+        cursor.execute("SET statement_timeout TO 0")
+        cursor.execute("SET synchronous_commit TO OFF")
+        cursor.execute(
+            """
+            CREATE TEMP TABLE padrones_import_staging (
+                identificacion varchar(11) NOT NULL,
+                denominacion varchar(160) NOT NULL,
+                actividad varchar(6),
+                marca_baja varchar(1),
+                cuit_reemplazo varchar(11),
+                fallecimiento varchar(1)
+            ) ON COMMIT PRESERVE ROWS
+            """
+        )
+        connection.commit()
+
+        with zipfile.ZipFile(padron_zip_path) as zip_file:
+            zip_info = zip_file.getinfo(PADRON_ZIP_MEMBER)
+            total_bytes = int(zip_info.file_size)
+            _update_job(
+                job_id,
+                stage="processing_padron",
+                message="Cargando padrón en tabla temporal...",
+                progress_total=total_bytes,
+                progress_current=0,
+                processed_rows=0,
+            )
+
+            with zip_file.open(PADRON_ZIP_MEMBER) as padron_txt:
+                while True:
+                    buffer = io.StringIO()
+                    rows_in_batch = 0
+                    write_line = buffer.write
+
+                    while rows_in_batch < PADRON_COPY_BATCH_SIZE:
+                        raw_line = padron_txt.readline()
+                        if not raw_line:
+                            break
+                        processed_bytes += len(raw_line)
+                        total_rows += 1
+                        rows_in_batch += 1
+                        write_line(_format_padron_line(raw_line.decode("ISO-8859-1")))
+
+                    if rows_in_batch == 0:
+                        break
+
+                    buffer.seek(0)
+                    try:
+                        cursor.copy_from(
+                            buffer,
+                            "padrones_import_staging",
+                            sep="\t",
+                            null="\\N",
+                            columns=PADRON_COPY_COLUMNS,
+                        )
+                        connection.commit()
+                    except Exception as exc:
+                        connection.rollback()
+                        raise RuntimeError(
+                            f"Falló el COPY del lote de padrón alrededor de la fila {total_rows:,}".replace(",", ".")
+                        ) from exc
+                    finally:
+                        buffer.close()
+
+                    _update_job(
+                        job_id,
+                        progress_current=processed_bytes,
+                        progress_total=total_bytes,
+                        processed_rows=total_rows,
+                        message=f"Procesadas {total_rows:,} filas de padrón.".replace(",", "."),
+                    )
+                    logger.info("COPY padrón: %s filas procesadas", f"{total_rows:,}".replace(",", "."))
+
+        _update_job(
+            job_id,
+            stage="replacing_padron",
+            message="Reemplazando padrón anterior por el nuevo...",
+            progress_current=processed_bytes,
+            progress_total=total_bytes,
+            processed_rows=total_rows,
+        )
+        cursor.execute(f"TRUNCATE TABLE {Padron.__tablename__} RESTART IDENTITY")
+        cursor.execute(
+            f"""
+            INSERT INTO {Padron.__tablename__} ({", ".join(PADRON_COPY_COLUMNS)})
+            SELECT {", ".join(PADRON_COPY_COLUMNS)}
+            FROM padrones_import_staging
+            """
+        )
+        cursor.execute(f"ANALYZE {Padron.__tablename__}")
+        connection.commit()
+        return total_rows, total_bytes
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def _run_deudores_job(job_id: str, deudores_zip_path: Path, entidades_path: Path) -> None:
     db = SessionLocal()
     try:
@@ -403,6 +546,40 @@ def _run_deudores_job(job_id: str, deudores_zip_path: Path, entidades_path: Path
         _safe_unlink(entidades_path)
 
 
+def _run_padron_job(job_id: str, padron_zip_path: Path) -> None:
+    try:
+        _update_job(
+            job_id,
+            status="running",
+            stage="processing_padron",
+            message="Procesando archivo de padrón...",
+            started_at=_utc_now(),
+        )
+        processed_rows, total_bytes = _copy_padron_to_postgres(padron_zip_path, job_id)
+        _update_job(
+            job_id,
+            status="completed",
+            stage="completed",
+            message=f"Importación de padrón completada. Se cargaron {processed_rows:,} filas.".replace(",", "."),
+            processed_rows=processed_rows,
+            progress_current=total_bytes,
+            progress_total=total_bytes,
+            finished_at=_utc_now(),
+        )
+    except Exception as exc:
+        logger.exception("Falló la carga de padrón para el job %s", job_id)
+        _update_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            message="Falló la carga de padrón. El padrón anterior quedó intacto.",
+            error=str(exc),
+            finished_at=_utc_now(),
+        )
+    finally:
+        _safe_unlink(padron_zip_path)
+
+
 def create_deudores_job(deudores: UploadFile, entidades: UploadFile) -> ImportJob:
     upload_prefix = uuid.uuid4().hex
     deudores_zip_path = UPLOAD_DIR / f"{upload_prefix}_deudores.zip"
@@ -411,7 +588,7 @@ def create_deudores_job(deudores: UploadFile, entidades: UploadFile) -> ImportJo
     with _job_creation_lock:
         db = SessionLocal()
         try:
-            _ensure_no_active_job(db)
+            _ensure_no_active_job(db, JOB_TYPE_DEUDORES)
             _save_upload_file(deudores, deudores_zip_path)
             _save_upload_file(entidades, entidades_path)
             _validate_deudores_zip(deudores_zip_path)
@@ -443,6 +620,48 @@ def create_deudores_job(deudores: UploadFile, entidades: UploadFile) -> ImportJo
     thread = threading.Thread(
         target=_run_deudores_job,
         args=(job.id, deudores_zip_path, entidades_path),
+        daemon=True,
+    )
+    thread.start()
+    return job
+
+
+def create_padron_job(padron: UploadFile) -> ImportJob:
+    upload_prefix = uuid.uuid4().hex
+    padron_zip_path = UPLOAD_DIR / f"{upload_prefix}_padron.zip"
+
+    with _job_creation_lock:
+        db = SessionLocal()
+        try:
+            _ensure_no_active_job(db, JOB_TYPE_PADRON)
+            _save_upload_file(padron, padron_zip_path)
+            _validate_zip_member(padron_zip_path, PADRON_ZIP_MEMBER, "padrón")
+
+            job = ImportJob(
+                id=str(uuid.uuid4()),
+                job_type=JOB_TYPE_PADRON,
+                status="queued",
+                stage="queued",
+                message="Archivo de padrón recibido. El job está en cola.",
+                progress_current=0,
+                progress_total=0,
+                processed_rows=0,
+                padron_filename=padron.filename,
+                created_at=_utc_now(),
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+        except Exception:
+            db.rollback()
+            _safe_unlink(padron_zip_path)
+            raise
+        finally:
+            db.close()
+
+    thread = threading.Thread(
+        target=_run_padron_job,
+        args=(job.id, padron_zip_path),
         daemon=True,
     )
     thread.start()
