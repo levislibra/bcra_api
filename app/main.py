@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Header, Form
 from app.database import engine, Base
 from sqlalchemy.orm import Session, sessionmaker
@@ -24,7 +26,7 @@ Base.metadata.create_all(bind=engine)
 print("Tablas creadas", flush=True)
 
 # Define el token único que será usado para autenticar
-SECRET_TOKEN = "1234"
+SECRET_TOKEN = os.getenv("SECRET_TOKEN", "1234")
 PREFIJOS_CUIL = [
     "01", "02", "03", "04", "05", "06", "07", "08", "09", "10",
     "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
@@ -41,6 +43,18 @@ PREFIJOS_CUIL = [
 @app.get("/")
 async def read_root():
 	return {"message": "Central de Deudores lista"}
+
+
+@app.get("/health")
+async def healthcheck():
+	return {"status": "ok"}
+
+
+@app.get("/api/validate-token")
+async def validate_token(token: str):
+	if token != SECRET_TOKEN:
+		raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
+	return {"valid": True}
 
 # *********************************************
 # Consultas por API
@@ -151,108 +165,319 @@ def calcular_digito_verificador(cuit_base: str) -> str:
 # Endpoint GET para renderizar un formulario HTML
 @app.get("/deudores/upload", response_class=HTMLResponse)
 async def get_upload_form():
-	return """
-	<html>
-		<head>
-			<title>Subir archivos</title>
-			<style>
-				body {
-					font-family: Arial, sans-serif;
-					background-color: #f4f4f9;
-					display: flex;
-					justify-content: center;
-					align-items: center;
-					height: 100vh;
-				}
-				.form-container {
-					background-color: #fff;
-					padding: 20px;
-					border-radius: 10px;
-					box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-					max-width: 400px;
-					width: 100%;
-				}
-				h3 {
-					text-align: center;
-					color: #333;
-				}
-				label {
-					display: block;
-					margin-bottom: 8px;
-					color: #555;
-				}
-				input[type="file"],
-				input[type="text"] {
-					width: 100%;
-					padding: 10px;
-					margin-bottom: 20px;
-					border: 1px solid #ccc;
-					border-radius: 5px;
-					box-sizing: border-box;
-					font-size: 16px;
-				}
-				input[type="submit"] {
-					width: 100%;
-					background-color: #28a745;
-					color: white;
-					padding: 10px;
-					border: none;
-					border-radius: 5px;
-					font-size: 16px;
-					cursor: pointer;
-				}
-				input[type="submit"]:hover {
-					background-color: #218838;
-				}
-				.form-group {
-					margin-bottom: 20px;
-				}
-			</style>
-		</head>
-		<body>
-			<div class="form-container">
-				<h3>Subir archivos de deudores y entidades</h3>
-				<form action="/deudores/upload/" enctype="multipart/form-data" method="post">
-					<div class="form-group">
-						<label for="deudores">Archivo Deudores:</label>
-						<input type="file" id="deudores" name="deudores" required>
-					</div>
-					<div class="form-group">
-						<label for="entidades">Archivo Entidades:</label>
-						<input type="file" id="entidades" name="entidades" required>
-					</div>
-					<div class="form-group">
-						<label for="token">Token de seguridad:</label>
-						<input type="text" id="token" name="token" placeholder="Ingresa tu token" required>
-					</div>
-					<input type="submit" value="Cargar archivos">
-				</form>
-			</div>
-		</body>
-	</html>
-	"""
+    return '''
+    <html>
+        <head>
+            <title>Subir archivos</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background-color: #f4f4f9;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                }
+                .form-container {
+                    background-color: #fff;
+                    padding: 20px;
+                    border-radius: 10px;
+                    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+                    max-width: 400px;
+                    width: 100%;
+                }
+                h3 {
+                    text-align: center;
+                    color: #333;
+                }
+                label {
+                    display: block;
+                    margin-bottom: 8px;
+                    color: #555;
+                }
+                input[type="file"],
+                input[type="text"] {
+                    width: 100%;
+                    padding: 10px;
+                    margin-bottom: 20px;
+                    border: 1px solid #ccc;
+                    border-radius: 5px;
+                    box-sizing: border-box;
+                    font-size: 16px;
+                }
+                button[type="submit"] {
+                    width: 100%;
+                    background-color: #28a745;
+                    color: white;
+                    padding: 10px;
+                    border: none;
+                    border-radius: 5px;
+                    font-size: 16px;
+                    cursor: pointer;
+                }
+                button[type="submit"]:hover {
+                    background-color: #218838;
+                }
+                button[type="submit"]:disabled {
+                    background-color: #93c5a1;
+                    cursor: not-allowed;
+                }
+                .form-group {
+                    margin-bottom: 20px;
+                }
+                .message {
+                    display: none;
+                    padding: 10px;
+                    margin: 0 0 12px 0;
+                    border-radius: 5px;
+                    font-size: 14px;
+                }
+                .message.error {
+                    display: block;
+                    background-color: #fde8e8;
+                    color: #b91c1c;
+                }
+                .message.info {
+                    display: block;
+                    background-color: #e8f1fd;
+                    color: #1d4ed8;
+                }
+                .message.success {
+                    display: block;
+                    background-color: #e9f9ee;
+                    color: #166534;
+                }
+                .progress-wrapper {
+                    display: none;
+                    margin-bottom: 12px;
+                }
+                .progress-wrapper.visible {
+                    display: block;
+                }
+                .progress-header {
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 8px;
+                    font-size: 14px;
+                    color: #555;
+                }
+                .progress-track {
+                    width: 100%;
+                    height: 14px;
+                    background-color: #e5e7eb;
+                    border-radius: 999px;
+                    overflow: hidden;
+                }
+                .progress-bar {
+                    width: 0%;
+                    height: 100%;
+                    background: linear-gradient(90deg, #2563eb, #16a34a);
+                    transition: width 0.2s ease;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="form-container">
+                <h3>Subir archivos de deudores y entidades</h3>
+                <form id="upload-form" action="/deudores/upload/" enctype="multipart/form-data" method="post">
+                    <div class="form-group">
+                        <label for="deudores">Archivo Deudores (.zip):</label>
+                        <input type="file" id="deudores" name="deudores" accept=".zip" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="entidades">Archivo Entidades:</label>
+                        <input type="file" id="entidades" name="entidades" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="token">Token de seguridad:</label>
+                        <input type="text" id="token" name="token" placeholder="Ingresa tu token" required>
+                    </div>
+                    <div id="message" class="message" role="alert" aria-live="polite"></div>
+                    <div id="progress-wrapper" class="progress-wrapper" aria-live="polite">
+                        <div class="progress-header">
+                            <span>Progreso de carga</span>
+                            <span id="progress-text">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div id="progress-bar" class="progress-bar"></div>
+                        </div>
+                    </div>
+                    <button id="submit-button" type="submit">Cargar archivos</button>
+                </form>
+            </div>
+            <script>
+                const form = document.getElementById("upload-form");
+                const submitButton = document.getElementById("submit-button");
+                const progressWrapper = document.getElementById("progress-wrapper");
+                const progressBar = document.getElementById("progress-bar");
+                const progressText = document.getElementById("progress-text");
+                const message = document.getElementById("message");
+                const deudoresInput = document.getElementById("deudores");
+                const entidadesInput = document.getElementById("entidades");
+
+                function setMessage(text, type) {
+                    message.textContent = text;
+                    message.className = "message " + type;
+                }
+
+                function clearMessage() {
+                    message.textContent = "";
+                    message.className = "message";
+                }
+
+                function setProgress(value) {
+                    progressBar.style.width = value + "%";
+                    progressText.textContent = value + "%";
+                }
+
+                function toggleUploadingState(isUploading) {
+                    submitButton.disabled = isUploading;
+                    form.querySelectorAll("input").forEach((input) => {
+                        input.disabled = isUploading;
+                    });
+                }
+
+                async function validateToken(token) {
+                    const response = await fetch("/api/validate-token?token=" + encodeURIComponent(token), {
+                        method: "GET",
+                        cache: "no-store"
+                    });
+
+                    if (!response.ok) {
+                        let detail = "No se pudo validar el token.";
+                        try {
+                            const data = await response.json();
+                            detail = data.detail || detail;
+                        } catch (error) {
+                            console.error(error);
+                        }
+                        throw new Error(detail);
+                    }
+                }
+
+                form.addEventListener("submit", async (event) => {
+                    event.preventDefault();
+                    clearMessage();
+                    setProgress(0);
+                    progressWrapper.classList.remove("visible");
+
+                    const formData = new FormData(form);
+                    const token = formData.get("token");
+                    const deudoresFile = deudoresInput.files[0];
+                    const entidadesFile = entidadesInput.files[0];
+
+                    if (!deudoresFile || !entidadesFile) {
+                        setMessage("Seleccioná ambos archivos antes de continuar.", "error");
+                        return;
+                    }
+
+                    if (!token) {
+                        setMessage("Ingresá el token de seguridad.", "error");
+                        return;
+                    }
+
+                    if (!deudoresFile.name.toLowerCase().endsWith(".zip")) {
+                        setMessage("El archivo de deudores debe ser un .zip válido.", "error");
+                        return;
+                    }
+
+                    toggleUploadingState(true);
+                    setMessage("Validando token...", "info");
+
+                    try {
+                        await validateToken(token);
+                    } catch (error) {
+                        toggleUploadingState(false);
+                        setMessage(error.message || "Token inválido.", "error");
+                        return;
+                    }
+
+                    progressWrapper.classList.add("visible");
+                    setMessage("Subiendo archivos...", "info");
+
+                    const xhr = new XMLHttpRequest();
+                    xhr.open("POST", form.action);
+
+                    xhr.upload.addEventListener("progress", (progressEvent) => {
+                        if (!progressEvent.lengthComputable) {
+                            return;
+                        }
+
+                        const percentage = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+                        setProgress(percentage);
+
+                        if (percentage === 100) {
+                            setMessage("Carga completa. Procesando archivos...", "info");
+                        }
+                    });
+
+                    xhr.addEventListener("load", () => {
+                        toggleUploadingState(false);
+
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            setProgress(100);
+                            setMessage("Archivos procesados correctamente.", "success");
+                            form.reset();
+                            return;
+                        }
+
+                        let detail = "Ocurrió un error al cargar los archivos.";
+                        try {
+                            const data = JSON.parse(xhr.responseText);
+                            detail = data.detail || data.message || detail;
+                        } catch (error) {
+                            console.error(error);
+                        }
+                        setMessage(detail, "error");
+                    });
+
+                    xhr.addEventListener("error", () => {
+                        toggleUploadingState(false);
+                        setMessage("Error de red durante la carga. Revisá la conexión e intentá nuevamente.", "error");
+                    });
+
+                    xhr.send(formData);
+                });
+            </script>
+        </body>
+    </html>
+    '''
 
 @app.post("/deudores/upload/")
 async def upload_files(
-	deudores: UploadFile = File(...), 
-	entidades: UploadFile = File(...), 
-	token: str = Form(...),  # Leer el token desde el formulario en lugar del encabezado
-	db: Session = Depends(get_db)
+    deudores: UploadFile = File(...),
+    entidades: UploadFile = File(...),
+    token: str = Form(...),
+    db: Session = Depends(get_db)
 ):
-	# Verificar el token
-	if token != SECRET_TOKEN:
-		raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
-	logger.info(f"Token correcto.")
-	logger.info(f"Procesando archivo entidades...")
-	# Procesar primero el archivo de entidades
-	process_entidades(entidades.file, db)
-	logger.info(f"Archivo de entidades procesado correctamente.")
-	logger.info(f"Procesando archivo deudores...")
-	# Luego procesar el archivo de deudores
-	process_deudores(deudores.file, db)
-	logger.info(f"Archivo de deudores procesado correctamente.")
+    if token != SECRET_TOKEN:
+        raise HTTPException(status_code=403, detail="Acceso denegado, token inválido")
 
-	return {"message": "Archivos procesados correctamente"}
+    validate_deudores_zip_file(deudores.file)
+
+    logger.info("Token correcto.")
+    logger.info("Procesando archivo entidades...")
+    process_entidades(entidades.file, db)
+    logger.info("Archivo de entidades procesado correctamente.")
+    logger.info("Procesando archivo de deudores...")
+    process_deudores(deudores.file, db)
+    logger.info("Archivo de deudores procesado correctamente.")
+
+    return {"message": "Archivos procesados correctamente"}
+
+
+def validate_deudores_zip_file(deudores_file):
+    original_position = deudores_file.tell()
+
+    try:
+        deudores_file.seek(0)
+        with zipfile.ZipFile(deudores_file) as zip_file:
+            if "deudores.txt" not in zip_file.namelist():
+                raise HTTPException(status_code=400, detail="El archivo ZIP de deudores debe contener deudores.txt")
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="El archivo de deudores no es un ZIP válido.") from exc
+    finally:
+        deudores_file.seek(original_position)
 
 
 def load_entidades(db):
@@ -261,95 +486,91 @@ def load_entidades(db):
 	return {entidad.codigo_entidad: entidad.nombre_entidad for entidad in entidades}
 
 def process_deudores(deudores_file, db, batch_size=500):
-	print("Processing deudores file...", flush=True)
+    print("Processing deudores file...", flush=True)
 
-	# Precargar entidades en memoria
-	entidades_dict = load_entidades(db)
+    entidades_dict = load_entidades(db)
 
-	with tempfile.TemporaryFile() as temp_file:
-		temp_file.write(deudores_file.read())
-		temp_file.seek(0)
+    try:
+        deudores_file.seek(0)
+        with zipfile.ZipFile(deudores_file) as z:
+            with z.open("deudores.txt") as deudores_txt:
+                batch = []
+                line_count = 0
 
-		with zipfile.ZipFile(temp_file) as z:
-			with z.open('deudores.txt') as deudores_txt:
-				batch = []
-				line_count = 0
+                for line in deudores_txt:
+                    line = line.decode("ISO-8859-1")
 
-				# Leer el archivo línea por línea sin ThreadPoolExecutor
-				for line in deudores_txt:
-					line = line.decode("ISO-8859-1")
+                    codigo_entidad = line[0:5].strip()
+                    fecha_informacion = line[5:11].strip()
+                    tipo_identificacion = line[11:13].strip()
+                    numero_identificacion = line[13:24].strip()
+                    actividad = line[24:27].strip()
+                    situacion = int(line[27:29].strip() or "0")
+                    prestamos_total_garantias = float(line[29:41].strip().replace(',', '.')) if line[29:41].strip() else None
+                    sin_uso = float(line[41:53].strip().replace(',', '.')) if line[41:53].strip() else None
+                    garantias_otorgadas = float(line[53:65].strip().replace(',', '.')) if line[53:65].strip() else None
+                    otros_conceptos = float(line[65:77].strip().replace(',', '.')) if line[65:77].strip() else None
+                    garantias_preferidas_a = float(line[77:89].strip().replace(',', '.')) if line[77:89].strip() else None
+                    garantias_preferidas_b = float(line[89:101].strip().replace(',', '.')) if line[89:101].strip() else None
+                    sin_garantias_preferidas = float(line[101:113].strip().replace(',', '.')) if line[101:113].strip() else None
+                    contragarantias_preferidas_a = float(line[113:125].strip().replace(',', '.')) if line[113:125].strip() else None
+                    contragarantias_preferidas_b = float(line[125:137].strip().replace(',', '.')) if line[125:137].strip() else None
+                    sin_contragarantias_preferidas = float(line[137:149].strip().replace(',', '.')) if line[137:149].strip() else None
+                    previsiones = float(line[149:161].strip().replace(',', '.')) if line[149:161].strip() else None
+                    deuda_cubierta = int(line[161:162].strip())
+                    proceso_judicial_revision = int(line[162:163].strip())
+                    refinanciaciones = int(line[163:164].strip())
+                    recategorizacion_obligatoria = int(line[164:165].strip())
+                    situacion_juridica = int(line[165:166].strip())
+                    irrecuperables_disposicion_tecnica = int(line[166:167].strip())
+                    dias_atraso = int(line[167:170].strip())
 
-					# Extraer los campos necesarios de la línea
-					codigo_entidad = line[0:5].strip()
-					fecha_informacion = line[5:11].strip()
-					tipo_identificacion = line[11:13].strip()
-					numero_identificacion = line[13:24].strip()
-					actividad = line[24:27].strip()
-					situacion = int(line[27:29].strip() or "0")
-					prestamos_total_garantias = float(line[29:41].strip().replace(',', '.')) if line[29:41].strip() else None
-					sin_uso = float(line[41:53].strip().replace(',', '.')) if line[41:53].strip() else None
-					garantias_otorgadas = float(line[53:65].strip().replace(',', '.')) if line[53:65].strip() else None
-					otros_conceptos = float(line[65:77].strip().replace(',', '.')) if line[65:77].strip() else None
-					garantias_preferidas_a = float(line[77:89].strip().replace(',', '.')) if line[77:89].strip() else None
-					garantias_preferidas_b = float(line[89:101].strip().replace(',', '.')) if line[89:101].strip() else None
-					sin_garantias_preferidas = float(line[101:113].strip().replace(',', '.')) if line[101:113].strip() else None
-					contragarantias_preferidas_a = float(line[113:125].strip().replace(',', '.')) if line[113:125].strip() else None
-					contragarantias_preferidas_b = float(line[125:137].strip().replace(',', '.')) if line[125:137].strip() else None
-					sin_contragarantias_preferidas = float(line[137:149].strip().replace(',', '.')) if line[137:149].strip() else None
-					previsiones = float(line[149:161].strip().replace(',', '.')) if line[149:161].strip() else None
-					deuda_cubierta = int(line[161:162].strip())
-					proceso_judicial_revision = int(line[162:163].strip())
-					refinanciaciones = int(line[163:164].strip())
-					recategorizacion_obligatoria = int(line[164:165].strip())
-					situacion_juridica = int(line[165:166].strip())
-					irrecuperables_disposicion_tecnica = int(line[166:167].strip())
-					dias_atraso = int(line[167:170].strip())
+                    nombre_entidad = entidades_dict.get(codigo_entidad, "Desconocida")
 
-					# Obtener el nombre de la entidad del diccionario precargado
-					nombre_entidad = entidades_dict.get(codigo_entidad, "Desconocida")
+                    batch.append({
+                        "codigo_entidad": codigo_entidad,
+                        "fecha_informacion": fecha_informacion,
+                        "tipo_identificacion": tipo_identificacion,
+                        "numero_identificacion": numero_identificacion,
+                        "actividad": actividad,
+                        "situacion": situacion,
+                        "prestamos_total_garantias": prestamos_total_garantias,
+                        "sin_uso": sin_uso,
+                        "garantias_otorgadas": garantias_otorgadas,
+                        "otros_conceptos": otros_conceptos,
+                        "garantias_preferidas_a": garantias_preferidas_a,
+                        "garantias_preferidas_b": garantias_preferidas_b,
+                        "sin_garantias_preferidas": sin_garantias_preferidas,
+                        "contragarantias_preferidas_a": contragarantias_preferidas_a,
+                        "contragarantias_preferidas_b": contragarantias_preferidas_b,
+                        "sin_contragarantias_preferidas": sin_contragarantias_preferidas,
+                        "previsiones": previsiones,
+                        "deuda_cubierta": deuda_cubierta,
+                        "proceso_judicial_revision": proceso_judicial_revision,
+                        "refinanciaciones": refinanciaciones,
+                        "recategorizacion_obligatoria": recategorizacion_obligatoria,
+                        "situacion_juridica": situacion_juridica,
+                        "irrecuperables_disposicion_tecnica": irrecuperables_disposicion_tecnica,
+                        "dias_atraso": dias_atraso,
+                        "nombre_entidad": nombre_entidad
+                    })
 
-					# Agregar al lote
-					batch.append({
-						"codigo_entidad": codigo_entidad,
-						"fecha_informacion": fecha_informacion,
-						"tipo_identificacion": tipo_identificacion,
-						"numero_identificacion": numero_identificacion,
-						"actividad": actividad,
-						"situacion": situacion,
-						"prestamos_total_garantias": prestamos_total_garantias,
-						"sin_uso": sin_uso,
-						"garantias_otorgadas": garantias_otorgadas,
-						"otros_conceptos": otros_conceptos,
-						"garantias_preferidas_a": garantias_preferidas_a,
-						"garantias_preferidas_b": garantias_preferidas_b,
-						"sin_garantias_preferidas": sin_garantias_preferidas,
-						"contragarantias_preferidas_a": contragarantias_preferidas_a,
-						"contragarantias_preferidas_b": contragarantias_preferidas_b,
-						"sin_contragarantias_preferidas": sin_contragarantias_preferidas,
-						"previsiones": previsiones,
-						"deuda_cubierta": deuda_cubierta,
-						"proceso_judicial_revision": proceso_judicial_revision,
-						"refinanciaciones": refinanciaciones,
-						"recategorizacion_obligatoria": recategorizacion_obligatoria,
-						"situacion_juridica": situacion_juridica,
-						"irrecuperables_disposicion_tecnica": irrecuperables_disposicion_tecnica,
-						"dias_atraso": dias_atraso,
-						"nombre_entidad": nombre_entidad
-					})
+                    line_count += 1
 
-					line_count += 1
+                    if len(batch) >= batch_size:
+                        save_batch_deudor(db, batch)
+                        logger.info(f"Processed {line_count} lines so far")
+                        batch.clear()
 
-					# Procesar el lote cuando alcanza el tamaño definido
-					if len(batch) >= batch_size:
-						save_batch_deudor(db, batch)
-						logger.info(f"Processed {line_count} lines so far")
-						batch.clear()  # Limpiar el lote para el siguiente
+                if batch:
+                    save_batch_deudor(db, batch)
+                    logger.info(f"Processed {line_count} lines in total")
+                    batch.clear()
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="El archivo de deudores no es un ZIP válido.") from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail="El archivo ZIP de deudores debe contener deudores.txt") from exc
 
-				# Procesar cualquier lote restante
-				if batch:
-					save_batch_deudor(db, batch)
-					logger.info(f"Processed {line_count} lines in total")
-					batch.clear()
 
 def save_batch_deudor(db, batch):
     db.bulk_insert_mappings(Deudor, batch)
@@ -568,7 +789,7 @@ async def get_padron_by_identificacion(identificacion: str, db: Session = Depend
 	logger.info(f"Posibles identificaciones a buscar: {posibles_identificaciones}")
 
 	# Buscar en la base de datos por las identificaciones generadas
-	registros = db.query(Padron).filter(Padron.identificacion.in_(posibles_identificaciones))
+	registros = db.query(Padron).filter(Padron.identificacion.in_(posibles_identificaciones)).all()
 	logger.info(f"Registro encontrado: {registros}")
 	if not registros:
 		raise HTTPException(status_code=404, detail="Registro no encontrado")
