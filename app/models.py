@@ -1,10 +1,13 @@
-from sqlalchemy import BigInteger, Column, DateTime, Integer, Numeric, String, Text
+from sqlalchemy import BigInteger, Column, DateTime, Index, Integer, Numeric, String, Text
 
 from app.database import Base
 
 
 class Deudor(Base):
     __tablename__ = 'deudores'
+    __table_args__ = (
+        Index('idx_deudores_numero_fecha_desc', 'numero_identificacion', 'fecha_informacion'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     codigo_entidad = Column(String(5), nullable=False)
